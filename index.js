@@ -3,6 +3,7 @@ const http = require('http')
 const https = require('https')
 const {URL} = require('url')
 const fs = require('fs')
+const {request} = require('@ideadesignmedia/request')
 const chooseProvider = protocol => protocol === 'https:' ? https : http
 const removedKeys = [
     'host',
