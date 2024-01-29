@@ -26,6 +26,13 @@ const proxyRequest = (req, res) => {
         return
     }
     const proxyHost = req.headers['destination'] || proxyMaster
+    if (!proxyHost) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'text/plain')
+        res.write('Internal Server Error')
+        res.end()
+        return
+    }
     const options = {
         headers: {},
         method: req.method
