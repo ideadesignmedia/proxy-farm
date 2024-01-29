@@ -14,3 +14,9 @@ app.get('/', (req, res) => {
         res.status(500).json({error: true, message: 'Internal Server Error'})
     }
 })
+require('@ideadesignmedia/webserver.js')({
+    httpPort: process.env.PORT,
+    port: process.env.HTTPS_PORT,
+    cert: process.env.CERT,
+    key: process.env.KEY
+}, app)
