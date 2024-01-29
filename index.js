@@ -55,7 +55,7 @@ const proxyRequest = (req, res) => {
 if (process.env.CERT_MASTER) {
     request(process.env.CERT_MASTER, {method: 'GET', headers: {'AUTHORIZATION': "Basic " + Buffer.from(process.env.CERT_AUTH).toString('base64')}}).then(res => {
         const {cert, key} = res
-        https.createServer({cert, key}, proxyRequest).listen(parseInt(process.env.HTTPS_PORT))
+        https.createServer({cert: Buffer.from(cert, 'utf8'), key: Buffer.from(key, 'utf8')}, proxyRequest).listen(parseInt(process.env.HTTPS_PORT))
     }).catch(e => {
         console.log('error', e)
     })
