@@ -4,5 +4,6 @@
     "CERT_AUTH": "WELOVECERTS",
     "CERT_MASTER": "https://certmaster.yourdomain.com",
     "CERT": "/etc/letsencrypt/live/yourdomain.com/fullchain.pem",
-    "KEY": "/etc/letsencrypt/live/yourdomain.com/privkey.pem"
+    "KEY": "/etc/letsencrypt/live/yourdomain.com/privkey.pem",
+    "AUTH": ""
 }
