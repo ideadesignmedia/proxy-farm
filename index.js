@@ -182,7 +182,7 @@ const proxyRequest = (req, res) => {
                 return
             }
         }
-    } else if (requireAuth && authOn && req.headers['proxy-auth'] !== process.env.AUTH) {
+    } else if (!req.headers['destination'] || (requireAuth && authOn && req.headers['proxy-auth'] !== process.env.AUTH)) {
         res.statusCode = 401
         res.setHeader('Content-Type', 'text/plain')
         res.write('Unauthorized')
