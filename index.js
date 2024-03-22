@@ -31,29 +31,74 @@ class BufferedStream extends Duplex {
         this.push(null)
     }
 }
-const fallbackLessProxy = (url, options, reqStream, returnError) => new Promise((res) => {
-    const proxyReq = chooseProvider(url.protocol).request(url, { ...options, headers: { ...options.headers, host: url.host, origin: url.origin } }, async proxyRes => {
-        if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400) {
-            const respStream = await fallbackLessProxy(new URL(proxyRes.headers['location']), options, reqStream)
-            if (respStream) {
-                res(respStream)
-            } else if (returnError) {
-                res(respStream)
+const fallbackLessProxy = (url, options, reqStream, returnError, respond) => {
+    let killed = false
+    let proxyReq
+    const createRequest = (location) => {
+        const url = new URL(location)
+        proxyReq = chooseProvider(url.protocol).request(url, { ...options, headers: { ...options.headers, host: url.host, origin: url.origin } }, handleResponse)
+        proxyReq.on('error', e => {
+            console.log(e)
+            if (returnError) {
+                respond()
             }
-        } else if (proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) {
-            res(proxyRes)
-        } else if (returnError) {
-            res(respStream)
+        })
+        reqStream.pipe(proxyReq)
+    }
+    const handleResponse = proxyRes => {
+        if (killed) return
+        if (proxyRes.statusCode >= 300 && proxyRes.statusCode < 400 && proxyRes.headers['location']) {
+            createRequest(proxyRes.headers['location'])
+        } else if ((proxyRes.statusCode >= 200 && proxyRes.statusCode < 300) || returnError) {
+            respond(proxyRes)
         }
-    })
-    proxyReq.on('error', e => {
-        console.log(e)
-        if (returnError) {
-            res()
+    }
+    createRequest(url)
+    return () => {
+        killed = true
+        proxyReq.destroy()
+    }
+}
+const race = (req, reqStream, destination, options, res) => {
+    const timeout = req.headers['proxy-timeout'] || 60000
+    const streams = {}
+    const cancelOthers = (index) => {
+        for (let i = 0; i < destination.length; i++) {
+            if (i !== index && streams[i]) {
+
+                streams[i]()
+            }
         }
-    })
-    reqStream.pipe(proxyReq)
-})
+    }
+    const t = () => {
+        if (!res.headersSent) {
+            res.statusCode = 500
+            res.setHeader('Content-Type', 'text/plain')
+            res.write('Timeout')
+            res.end()
+        }
+        for (let i = 0; i < destination.length; i++) {
+            if (streams[i]) {
+                streams[i]()
+            }
+        }
+    }
+    const endOnTimeout = setTimeout(() => t(), Number.isNaN(parseInt(timeout)) ? 30000 : parseInt(timeout))
+    const respond = (index, stream) => {
+        clearTimeout(endOnTimeout)
+        try {
+            cancelOthers(index)
+        } catch { }
+        res.headersSent = true
+        res.statusCode = stream.statusCode
+        const keys = Object.keys(stream.headers)
+        for (let i = 0; i < keys.length; i++) {
+            res.setHeader(keys[i], stream.headers[keys[i]])
+        }
+        stream.pipe(res)
+    }
+    for (let i = 0; i < destination.length; i++) streams[i] = fallbackLessProxy(new URL(`${destination[i]}${req.url}`), options, reqStream, Boolean(req.headers['return-error']), (stream) => respond(i, stream))
+}
 const multiRequest = async (req, destination, reqStream, options, res) => {
     var responseStream
     let i = 0, errored
@@ -66,7 +111,7 @@ const multiRequest = async (req, destination, reqStream, options, res) => {
                 const statusCode = proxyRes.statusCode
                 if ((statusCode >= 200 && statusCode < 300) || i === destination.length - 1) {
                     return res(proxyRes)
-                } else if (statusCode >= 300 && statusCode < 400) {
+                } else if (statusCode >= 300 && statusCode < 400 && proxyRes.headers['location']) {
                     const location = proxyRes.headers['location']
                     if (location) {
                         destination.push(location)
@@ -124,7 +169,7 @@ const proxySingleRequest = async (req, reqStream, res, proxyHost, options) => {
                 if (!removedKeys.includes(keys[i])) options.headers[keys[i]] = req.headers[keys[i]]
             }
             const proxyReq = chooseProvider(url.protocol).request(url, { ...options, headers: { ...options.headers, origin: url.origin, host: url.host } }, responseStream => {
-                if (responseStream.statusCode >= 300 && responseStream.statusCode < 400) {
+                if (responseStream.statusCode >= 300 && responseStream.statusCode < 400 && responseStream.headers['location']) {
                     const location = responseStream.headers['location']
                     if (location) {
                         proxyHost = location
@@ -144,16 +189,19 @@ const proxySingleRequest = async (req, reqStream, res, proxyHost, options) => {
         clearTimeout(timeout)
     }
     if (errored || !responseStream) {
+        res.headersSent = true
         res.statusCode = 500
         res.setHeader('Content-Type', 'text/plain')
         res.write('Internal Server Error')
         res.end()
     } else if (responseStream === 'timed-out') {
+        res.headersSent = true
         res.statusCode = 504
         res.setHeader('Content-Type', 'text/plain')
         res.write('Gateway Timeout')
         res.end()
     } else {
+        res.headersSent = true
         res.statusCode = responseStream.statusCode
         const keys = Object.keys(responseStream.headers)
         for (let i = 0; i < keys.length; i++) {
@@ -162,6 +210,7 @@ const proxySingleRequest = async (req, reqStream, res, proxyHost, options) => {
         responseStream.pipe(res)
     }
 }
+
 const proxyRequest = (req, res) => {
     if (req.method === 'OPTIONS' && !req.headers['destination']) {
         res.statusCode = 200
@@ -226,38 +275,20 @@ const proxyRequest = (req, res) => {
     req.pipe(reqStream)
     if (destination.length > 1) {
         if (req.headers['race']) {
-            const proms = []
-            for (let i = 0; i < destination.length; i++) {
-                const url = new URL(`${destination[i]}${req.url}`)
-                proms.push(fallbackLessProxy(url, options, reqStream, Boolean(req.headers['return-error'])))
-            }
-            const timeout = req.headers['proxy-timeout'] || 30000
-            proms.push(new Promise((res, rej) => setTimeout(() => rej(new Error('Timeout')), Number.isNaN(parseInt(timeout)) ? 30000 : parseInt(timeout))))
-            Promise.race(proms).then(responseStream => {
-                if (responseStream) {
-                    res.statusCode = responseStream.statusCode
-                    const keys = Object.keys(responseStream.headers)
-                    for (let i = 0; i < keys.length; i++) {
-                        res.setHeader(keys[i], responseStream.headers[keys[i]])
-                    }
-                    res.headersSent = true
-                    responseStream.pipe(res)
-                } else {
+            try {
+                race(req, reqStream, destination, options, res)
+            } catch (e) {
+                console.error(e)
+                if (!res.headersSent) {
                     res.statusCode = 500
                     res.setHeader('Content-Type', 'text/plain')
                     res.write('Internal Server Error')
                     res.end()
                 }
-            }).catch(e => {
-                if (!res.headersSent) {
-                    res.statusCode = 500
-                    res.setHeader('Content-Type', 'text/plain')
-                    res.write('Internal Server Error: ' + e.message)
-                    res.end()
-                }
-            })
+            }
         } else {
             multiRequest(req, destination, reqStream, options, res).catch(e => {
+                console.error(e)
                 if (!res.headersSent) {
                     res.statusCode = 500
                     res.setHeader('Content-Type', 'text/plain')
@@ -272,7 +303,15 @@ const proxyRequest = (req, res) => {
             headers: {},
             method: req.method
         }
-        proxySingleRequest(req, reqStream, res, proxyHost, options)
+        proxySingleRequest(req, reqStream, res, proxyHost, options).catch(e => {
+            console.error(e)
+            if (!res.headersSent) {
+                res.statusCode = 500
+                res.setHeader('Content-Type', 'text/plain')
+                res.write('Internal Server Error')
+                res.end()
+            }
+        })
     }
 }
 if (process.env.CERT_MASTER) {
