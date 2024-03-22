@@ -56,11 +56,11 @@ const fallbackLessProxy = (url, options, reqStream, returnError) => new Promise(
 })
 const multiRequest = async (req, destination, reqStream, options, res) => {
     var responseStream
-    let i = 0
+    let i = 0, errored
     while (!responseStream && i < destination.length && i < maxDestinations) {
         let timeout
         responseStream = await new Promise((res) => {
-            timeout = setTimeout(() => res(), req.headers['proxy-timeout'] || 15000)
+            timeout = setTimeout(() => res('timed-out'), req.headers['proxy-timeout'] || 15000)
             const url = new URL(`${destination[i]}${req.url}`)
             const proxyReq = chooseProvider(url.protocol).request(url, { ...options, headers: { ...options.headers, host: url.host, origin: url.origin } }, proxyRes => {
                 const statusCode = proxyRes.statusCode
@@ -81,12 +81,28 @@ const multiRequest = async (req, destination, reqStream, options, res) => {
             reqStream.pipe(proxyReq)
             i++
         }).catch(e => {
-            clearTimeout(timeout)
-            throw e
+            errored = i === destination.length - 1
+            if (errored) {
+                console.log(e)
+            }
         })
-        clearTimeout(timeout)
+        if (responseStream === 'timed-out' && i !== destination.length - 1) {
+            responseStream = null
+        } else {
+            clearTimeout(timeout)
+        }
     }
-    if (responseStream) {
+    if (errored || !responseStream) {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'text/plain')
+        res.write('Internal Server Error')
+        res.end()
+    } else if (responseStream === 'timed-out') {
+        res.statusCode = 504
+        res.setHeader('Content-Type', 'text/plain')
+        res.write('Gateway Timeout')
+        res.end()
+    } else {
         res.statusCode = responseStream.statusCode
         const keys = Object.keys(responseStream.headers)
         for (let i = 0; i < keys.length; i++) {
@@ -94,24 +110,14 @@ const multiRequest = async (req, destination, reqStream, options, res) => {
         }
         res.headersSent = true
         responseStream.pipe(res)
-    } else {
-        res.statusCode = 500
-        res.setHeader('Content-Type', 'text/plain')
-        res.write('Internal Server Error')
-        res.headersSent = true
-        res.end()
     }
 }
-const proxySingleRequest = async (req, res, proxyHost, options) => {
-    const reqStream = new BufferedStream()
-    const keys = Object.keys(req.headers)
-    for (let i = 0; i < keys.length; i++) {
-        if (!removedKeys.includes(keys[i])) options.headers[keys[i]] = req.headers[keys[i]]
-    }
-    req.pipe(reqStream)
+const proxySingleRequest = async (req, reqStream, res, proxyHost, options) => {
     let responseStream, errored, i = 0
     while (!responseStream && !errored && i < maxDestinations) {
+        let timeout
         responseStream = await new Promise((res, rej) => {
+            timeout = setTimeout(() => res('timed-out'), req.headers['proxy-timeout'] || 15000)
             var url = new URL(`${proxyHost}${req.url}`)
             const keys = Object.keys(req.headers)
             for (let i = 0; i < keys.length; i++) {
@@ -130,16 +136,22 @@ const proxySingleRequest = async (req, res, proxyHost, options) => {
             proxyReq.on('error', e => {
                 rej(e)
             })
-            req.pipe(proxyReq)
+            reqStream.pipe(proxyReq)
         }).catch(e => {
             console.log(e)
             errored = true
         })
+        clearTimeout(timeout)
     }
     if (errored || !responseStream) {
         res.statusCode = 500
         res.setHeader('Content-Type', 'text/plain')
         res.write('Internal Server Error')
+        res.end()
+    } else if (responseStream === 'timed-out') {
+        res.statusCode = 504
+        res.setHeader('Content-Type', 'text/plain')
+        res.write('Gateway Timeout')
         res.end()
     } else {
         res.statusCode = responseStream.statusCode
@@ -201,17 +213,18 @@ const proxyRequest = (req, res) => {
         res.write('Bad Request')
         res.end()
         return
-    } else if (destination.length > 1) {
-        const reqStream = new BufferedStream()
-        const options = {
-            headers: {},
-            method: req.method
-        }
-        const keys = Object.keys(req.headers)
-        for (let i = 0; i < keys.length; i++) {
-            if (!removedKeys.includes(keys[i])) options.headers[keys[i]] = req.headers[keys[i]]
-        }
-        req.pipe(reqStream)
+    }
+    const reqStream = new BufferedStream()
+    const options = {
+        headers: {},
+        method: req.method
+    }
+    const keys = Object.keys(req.headers)
+    for (let i = 0; i < keys.length; i++) {
+        if (!removedKeys.includes(keys[i])) options.headers[keys[i]] = req.headers[keys[i]]
+    }
+    req.pipe(reqStream)
+    if (destination.length > 1) {
         if (req.headers['race']) {
             const proms = []
             for (let i = 0; i < destination.length; i++) {
@@ -259,7 +272,7 @@ const proxyRequest = (req, res) => {
             headers: {},
             method: req.method
         }
-        proxySingleRequest(req, res, proxyHost, options)
+        proxySingleRequest(req, reqStream, res, proxyHost, options)
     }
 }
 if (process.env.CERT_MASTER) {
