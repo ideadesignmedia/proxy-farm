@@ -6,7 +6,7 @@ const fs = require('fs')
 const { request } = require('@ideadesignmedia/request')
 const { Duplex } = require('stream')
 const chooseProvider = protocol => protocol === 'https:' ? https : http
-const maxDestinations = 3
+const maxDestinations = 10
 const removedKeys = [
     'destination',
     'race',
@@ -58,7 +58,9 @@ const multiRequest = async (req, destination, reqStream, options, res) => {
     var responseStream
     let i = 0
     while (!responseStream && i < destination.length && i < maxDestinations) {
+        let timeout
         responseStream = await new Promise((res) => {
+            timeout = setTimeout(() => res(), req.headers['proxy-timeout'] || 15000)
             const url = new URL(`${destination[i]}${req.url}`)
             const proxyReq = chooseProvider(url.protocol).request(url, { ...options, headers: { ...options.headers, host: url.host, origin: url.origin } }, proxyRes => {
                 const statusCode = proxyRes.statusCode
@@ -78,7 +80,11 @@ const multiRequest = async (req, destination, reqStream, options, res) => {
             })
             reqStream.pipe(proxyReq)
             i++
+        }).catch(e => {
+            clearTimeout(timeout)
+            throw e
         })
+        clearTimeout(timeout)
     }
     if (responseStream) {
         res.statusCode = responseStream.statusCode
