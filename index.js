@@ -38,8 +38,8 @@ const fallbackLessProxy = (url, options, reqStream, returnError, respond) => {
         const url = new URL(location)
         proxyReq = chooseProvider(url.protocol).request(url, { ...options, headers: { ...options.headers, host: url.host, origin: url.origin } }, handleResponse)
         proxyReq.on('error', e => {
-            console.log(e)
             if (returnError) {
+                console.error(e)
                 respond()
             }
         })
@@ -65,7 +65,6 @@ const race = (req, reqStream, destination, options, res) => {
     const cancelOthers = (index) => {
         for (let i = 0; i < destination.length; i++) {
             if (i !== index && streams[i]) {
-
                 streams[i]()
             }
         }
