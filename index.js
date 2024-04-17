@@ -323,4 +323,10 @@ if (process.env.CERT_MASTER) {
 } else if (process.env.CERT && process.env.KEY) {
     https.createServer({ cert: fs.readFileSync(process.env.CERT), key: fs.readFileSync(process.env.KEY) }, proxyRequest).listen(parseInt(process.env.HTTPS_PORT))
 }
+process.on('unhandledRejection', e => {
+    console.error(e)
+})
+process.on('uncaughtException', e => {
+    console.error(e)
+})
 http.createServer(proxyRequest).listen(parseInt(process.env.PORT))
